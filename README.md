@@ -3,16 +3,10 @@
   <a href="https://ms-arch.gitbook.io/morrowvis/morrowind-library-tools/functions">Documentation</a>
 </p>
   
-* `build_gallery_data.bat` generates filtered JSONs for galleries.
-<br>Uses tes3conv to generate JSON, then JSON is filtered.
-* `build_gallery_images.bat` converts PNGs into WEBPs suitable for galleries.
-<br>Thumbnails folder: Low resolution images for gallery.
-<br>Renders folder: High resolution images for opening.
-* Works off folder inputs.
-
 ### Prerequisites
 
-* [tes3conv](https://github.com/Greatness7/tes3conv) in the same folder (for `build_gallery_data.bat`)
-* Python installation
+* [Python](https://www.python.org/downloads/) installation
 * [IrfanView](https://www.irfanview.com/) (for `build_gallery_images.bat`)
 * [IrfanView Plugins](https://www.irfanview.com/plugins.htm)
+* [Blender 5](https://www.blender.org/download/releases/5-0/)
+* [tes3conv](https://github.com/Greatness7/tes3conv) in Build_Gallery_Data
