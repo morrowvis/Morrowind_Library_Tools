@@ -68,7 +68,7 @@ if errorlevel 1 goto :finished_err
 
 echo.
 echo %c_ok%Done.%c_reset%
-powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; Add-Type -Namespace N -Name W -MemberDefinition ('[DllImport(' + [char]34 + 'user32.dll' + [char]34 + ')] public static extern bool SetProcessDPIAware();'); [void][N.W]::SetProcessDPIAware(); [System.Windows.Forms.Application]::EnableVisualStyles(); [void][System.Windows.Forms.MessageBox]::Show('master structure.json written to the output folder.','Build Master Records',[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Information)"
+powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; Add-Type -Namespace N -Name W -MemberDefinition ('[DllImport(' + [char]34 + 'user32.dll' + [char]34 + ')] public static extern bool SetProcessDPIAware();'); [void][N.W]::SetProcessDPIAware(); [System.Windows.Forms.Application]::EnableVisualStyles(); [void][System.Windows.Forms.MessageBox]::Show('Master records written to the output folder.','Build Master Records',[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Information)"
 if exist "%~dp0output\" start "" "%~dp0output"
 exit /b 0
 

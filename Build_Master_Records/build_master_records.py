@@ -2,12 +2,13 @@ import os
 import re
 import sys
 import glob
+import math
 import json
+import fnmatch
 import time
 import tempfile
 import subprocess
 import configparser
-from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -15,9 +16,8 @@ TES3CONV = os.path.join(os.path.dirname(SCRIPT_DIR), "Shared", "tes3conv.exe")
 _TRUE = {"1", "true", "yes", "on"}
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-# tes3conv record type -> ExportCells constants.objectTypeNames display string.
-# Only these are treated as records (mirrors nonDynamicData.objects minus the
-# config recordsExcludeTypes = {creature, bodyPart}); everything else is skipped.
+# tes3conv record type -> display name. Only these placeable object types are kept
+# as records; everything else (incl. creatures and body parts) is skipped.
 OBJECT_TYPE_NAMES = {
     "Activator": "Activator", "Alchemy": "Alchemy", "Apparatus": "Apparatus",
     "Armor": "Armor", "Book": "Book", "Clothing": "Clothing", "Container": "Container",
@@ -48,10 +48,8 @@ _LTBD_REL = os.path.join("MWSE", "mods", "RFD", "LetThereBeDarkness", "overrides
 # no record mesh use base_animKnA.nif instead of base_anim[_female].nif.
 RACE_BEAST = {}
 
-CHUNK = 1000  # records per "part", matching records.lua MAX
+CHUNK = 1000  # records per part
 IDENTITY = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
-# Matches jsons.processInstance: mesh under "meshes\grass\" or a leading "grass\".
-_GRASS = re.compile(r"(meshes[\\/])?grass[\\/]", re.IGNORECASE)
 _MESHES_PREFIX = re.compile(r"^(.*[\\/])?meshes[\\/]", re.IGNORECASE)
 
 
@@ -63,6 +61,33 @@ def num(x):
         return json.loads("%.8g" % float(x))
     except (ValueError, TypeError):
         return 0
+
+
+def compile_matcher(pattern):
+    """Mirror Thumbnail Generator's search filter: comma-separated AND-terms; a term
+    with * or ? is a whole-field glob, otherwise a case-insensitive substring; each
+    term is tested against the record's id / name / mesh / source_mod (any field).
+    Returns None for a blank pattern (imposes no constraint = match all)."""
+    term_fns = []
+    for raw in (pattern or "").split(","):
+        t = raw.strip().lower().replace("\\", "/")
+        if not t:
+            continue
+        if "*" in t or "?" in t:
+            rx = re.compile(fnmatch.translate(t))
+            term_fns.append(lambda fields, _rx=rx: any(_rx.match(f) for f in fields))
+        else:
+            term_fns.append(lambda fields, _t=t: any(_t in f for f in fields))
+    if not term_fns:
+        return None
+
+    def matcher(obj):
+        fields = ((obj.get("object_id") or "").lower(),
+                  (obj.get("object_name") or "").lower(),
+                  (obj.get("mesh") or "").lower().replace("\\", "/"),
+                  (obj.get("source_mod") or "").lower())
+        return all(fn(fields) for fn in term_fns)
+    return matcher
 
 
 def pretty_json(obj, level=0):
@@ -683,6 +708,10 @@ def main():
         workers = os.cpu_count() or 1
 
     apply_ltbd = settings.get("apply_ltbd", "auto").strip().lower()
+    try:
+        spacing = float(settings.get("spacing", "0"))
+    except ValueError:
+        spacing = 0.0
 
     mo2 = os.path.isfile(os.path.join(root, "ModOrganizer.ini"))
     missing = []
@@ -738,14 +767,26 @@ def main():
             elif t == "Race":
                 RACE_BEAST[rid.lower()] = "BEAST_RACE" in ((rec.get("data") or {}).get("flags") or "")
 
+    # optional record filters (blank = keep everything), like Thumbnail Generator
+    name_matcher = compile_matcher(settings.get("name", ""))
+    type_filter = {t.strip().lower() for t in settings.get("type", "").split(",") if t.strip()}
+
     # build objects, sorted by id (case-sensitive, like Lua tostring(a.id)<tostring(b.id))
     built = []
-    for rid_lower, (rec, src) in winners.items():
+    for rec, src in winners.values():
         res = build_record_object(rec, src)
-        if res:
-            built.append((rec.get("id", ""), res[0]))
+        if not res:
+            continue
+        obj = res[0]
+        if type_filter and obj.get("object_type", "").lower() not in type_filter:
+            continue
+        if name_matcher and not name_matcher(obj):
+            continue
+        built.append((rec.get("id", ""), obj))
     built.sort(key=lambda t: t[0])
     objects = [o for _id, o in built]
+    if name_matcher or type_filter:
+        print(f"Filters kept {len(objects)} record(s).")
 
     # phase 2: loose-mesh VFS + per-mesh child template cache (keyed by mesh + is_light)
     vfs, tmpl_cache = {}, {}
@@ -782,6 +823,10 @@ def main():
     root_obj = {"name": "master records", "type": "EMPTY", "matrix_local": IDENTITY, "parent": None}
     parts = []
     n_chunks = max(1, (len(objects) + CHUNK - 1) // CHUNK)
+    # spacing > 0 lays the records out in one continuous square-ish grid instead of all
+    # stacked at the origin (their children stay relative, so they move with the record).
+    row_size = max(1, math.ceil(len(objects) ** 0.5)) if spacing else 1
+    grid_i = 0
     started = time.time()
     child_count = 0
     for ci in range(n_chunks):
@@ -794,6 +839,10 @@ def main():
             # instead of colliding with the record -> which produced parent==name
             # self-loops that hang the emitters consumer's (guardless) BFS.
             obj["name"] = seq_name(counters, obj["object_id"])
+            if spacing:
+                x, y = (grid_i % row_size) * spacing, (grid_i // row_size) * spacing
+                obj["matrix_local"] = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [num(x), num(y), 0, 1]]
+                grid_i += 1
             part_objs.append(obj)
             kids = children_of(obj, counters)
             part_objs.extend(kids)
@@ -806,20 +855,31 @@ def main():
 
     # merge order = filenames sorted as strings (merge_jsons: input_dir.glob then .sort())
     parts.sort(key=lambda p: p[0])
-    master_list = [entry for _fn, entry in parts]
-
+    output = settings.get("output", "single").strip().lower()
     pretty = settings.get("json_format", "minified").strip().lower() in ("pretty", "multiline", "indented", "readable")
     out_dir = os.path.join(SCRIPT_DIR, "output")
     os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, "master structure.json")
-    with open(out_path, "w", encoding="utf-8") as f:
-        if pretty:
-            f.write(pretty_json(master_list))
-        else:
-            json.dump(master_list, f)
+    for old in glob.glob(os.path.join(out_dir, "*.json")):   # clear the previous run's json
+        try:
+            os.remove(old)
+        except OSError:
+            pass
 
-    size_mb = os.path.getsize(out_path) / (1024 * 1024)
-    print(f"\nWrote {out_path}  ({size_mb:.1f} MB)")
+    def _write(obj, path):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(pretty_json(obj)) if pretty else json.dump(obj, f)
+
+    if output == "split":
+        # one flat file per part: [ ...objects... ]
+        for fn, entry in parts:
+            _write(entry["objects"], os.path.join(out_dir, fn))
+        total_mb = sum(os.path.getsize(os.path.join(out_dir, fn)) for fn, _ in parts) / (1024 * 1024)
+        print(f"\nWrote {len(parts)} part file(s) -> {out_dir}  ({total_mb:.1f} MB total)")
+    else:
+        # one file, parts wrapped: [{json_name, objects}, ...]
+        out_path = os.path.join(out_dir, "master structure.json")
+        _write([entry for _fn, entry in parts], out_path)
+        print(f"\nWrote {out_path}  ({os.path.getsize(out_path) / (1024 * 1024):.1f} MB)")
     print(f"  records  : {len(objects)}")
     print(f"  children : {child_count}")
     print(f"  parts    : {n_chunks}")

@@ -81,9 +81,13 @@ for %%F in ("!input_directory!\*.esp" "!input_directory!\*.esm") do (
     )
 )
 
+rem  Running tes3conv per plugin over a full load order can take a while, so signal
+rem  completion with a GUI MessageBox (inline, DPI-aware) that surfaces if you've
+rem  tabbed away, then open the output folder once it's dismissed. See the repo CLAUDE.md.
 echo.
 echo %c_ok%Done.%c_reset%
-pause
+powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; Add-Type -Namespace N -Name W -MemberDefinition ('[DllImport(' + [char]34 + 'user32.dll' + [char]34 + ')] public static extern bool SetProcessDPIAware();'); [void][N.W]::SetProcessDPIAware(); [System.Windows.Forms.Application]::EnableVisualStyles(); [void][System.Windows.Forms.MessageBox]::Show('Gallery data written to the output folder.','Build Gallery Data',[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Information)"
+if exist "%output_directory%\" start "" "%output_directory%"
 exit /b 0
 
 

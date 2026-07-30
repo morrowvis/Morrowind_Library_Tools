@@ -52,17 +52,23 @@ echo %c_head%Comparing...%c_reset%
 echo.
 
 python "%~dp0extract_library_changes.py" "%new_lib%" "%old_lib%"
-if errorlevel 1 (
-    echo.
-    echo %c_err%Comparison reported an error.%c_reset%
-    pause
-    exit /b 1
-)
+if errorlevel 1 goto :finished_err
 
+rem  Hashing a full library can take a while, so signal completion with a GUI
+rem  MessageBox (inline, DPI-aware) that surfaces if you've tabbed away, then open
+rem  the output folder once it's dismissed. See the repo CLAUDE.md.
 echo.
 echo %c_ok%Done. Changes copied to the output folder.%c_reset%
-pause
+powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; Add-Type -Namespace N -Name W -MemberDefinition ('[DllImport(' + [char]34 + 'user32.dll' + [char]34 + ')] public static extern bool SetProcessDPIAware();'); [void][N.W]::SetProcessDPIAware(); [System.Windows.Forms.Application]::EnableVisualStyles(); [void][System.Windows.Forms.MessageBox]::Show('Changes copied to the output folder.','Extract Library Changes',[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Information)"
+if exist "%~dp0output\" start "" "%~dp0output"
 exit /b 0
+
+:finished_err
+echo.
+echo %c_err%Comparison reported an error.%c_reset%
+powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; Add-Type -Namespace N -Name W -MemberDefinition ('[DllImport(' + [char]34 + 'user32.dll' + [char]34 + ')] public static extern bool SetProcessDPIAware();'); [void][N.W]::SetProcessDPIAware(); [System.Windows.Forms.Application]::EnableVisualStyles(); [void][System.Windows.Forms.MessageBox]::Show('Finished with errors - see the console window.','Extract Library Changes',[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Information)"
+if exist "%~dp0output\" start "" "%~dp0output"
+exit /b 1
 
 
 :no_python

@@ -1,15 +1,20 @@
 import sys
 import os
+import json
 import hashlib
 import shutil
 import time
+import tempfile
+import subprocess
 import configparser
 from concurrent.futures import ThreadPoolExecutor
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+TES3CONV = os.path.join(os.path.dirname(SCRIPT_DIR), "Shared", "tes3conv.exe")
 HASH_BUF = 1 << 20  # 1 MiB
 
 _TRUE = {"1", "true", "yes", "on"}
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def load_settings():
@@ -49,6 +54,67 @@ def file_hash(path):
     return h.hexdigest()
 
 
+def _mesh_key(mesh):
+    """A record's mesh path -> the walk_files key format (root-relative, lower, '/')."""
+    m = mesh.lower().replace("\\", "/").lstrip("/")
+    if m.startswith("meshes/"):
+        m = m[len("meshes/"):]
+    return "meshes/" + m
+
+
+def _tes3conv_records(plugin):
+    """Run tes3conv on one plugin; return its record list (or [] on any failure)."""
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(suffix=".json", prefix="elc_")
+        os.close(fd)
+        proc = subprocess.run(
+            [TES3CONV, "-o", plugin, tmp],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, creationflags=_NO_WINDOW)
+        if proc.returncode != 0:
+            return []
+        with open(tmp, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+    finally:
+        if tmp and os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def creature_mesh_exclusions(libs, workers):
+    """Meshes that ExportCells' mesh filter would drop: those used *only* by
+    creature records. A mesh any non-creature record also uses is kept (that's
+    how ExportCells decides). Plugins are the .esp/.esm at each library's root.
+    Returns (exclusion_keys, plugin_count)."""
+    plugins = {}
+    for lib in libs:
+        try:
+            entries = os.listdir(lib)
+        except OSError:
+            continue
+        for fn in entries:
+            if fn.lower().endswith((".esp", ".esm")):
+                plugins.setdefault(fn.lower(), os.path.join(lib, fn))
+    if not plugins:
+        return set(), 0
+
+    creature, kept = set(), set()
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for recs in ex.map(_tes3conv_records, plugins.values()):
+            for r in recs:
+                mesh = r.get("mesh")
+                if not mesh:
+                    continue
+                key = _mesh_key(mesh)
+                (creature if r.get("type") == "Creature" else kept).add(key)
+    return creature - kept, len(plugins)
+
+
 def main():
     if len(sys.argv) < 3:
         print("usage: extract_library_changes.py <new_lib> <old_lib>")
@@ -59,6 +125,7 @@ def main():
     subfolders = [x.strip() for x in s.get("subfolders", "meshes, textures").split(",") if x.strip()]
     quick = s.get("quick", "false").strip().lower() in _TRUE
     write_flagged = s.get("flagged_meshes", "true").strip().lower() in _TRUE
+    exclude_creatures = s.get("exclude_creatures", "false").strip().lower() in _TRUE
     try:
         workers = int(s.get("workers", "-1"))
     except ValueError:
@@ -77,6 +144,21 @@ def main():
     print(f"Scanning old library: {old_lib}")
     old_files = walk_files(old_lib, subfolders)
     print(f"  new: {len(new_files)} file(s)   old: {len(old_files)} file(s)")
+
+    excluded_meshes = 0
+    if exclude_creatures:
+        if not os.path.isfile(TES3CONV):
+            print(f"ERROR: exclude_creatures needs tes3conv.exe in the Shared folder:\n  {TES3CONV}")
+            sys.exit(2)
+        print("Reading plugins for creature meshes (tes3conv)...")
+        excl, n_plugins = creature_mesh_exclusions([new_lib, old_lib], workers)
+        before = len(new_files) + len(old_files)
+        new_files = {k: v for k, v in new_files.items() if k not in excl}
+        old_files = {k: v for k, v in old_files.items() if k not in excl}
+        excluded_meshes = before - len(new_files) - len(old_files)
+        print(f"  {n_plugins} plugin(s) scanned; {len(excl)} creature-only mesh(es) "
+              f"-> {excluded_meshes} file(s) dropped from the diff")
+
     print(f"  comparing subfolders: {', '.join(subfolders)}"
           f"   mode: {'quick (size only)' if quick else 'size + hash'}\n")
 
@@ -143,7 +225,10 @@ def main():
         f.write(f"  new library: {new_lib}\n")
         f.write(f"  old library: {old_lib}\n")
         f.write(f"  subfolders : {', '.join(subfolders)}\n")
-        f.write(f"  mode       : {'quick (size only)' if quick else 'size + hash'}\n\n")
+        f.write(f"  mode       : {'quick (size only)' if quick else 'size + hash'}\n")
+        if exclude_creatures:
+            f.write(f"  creatures  : excluded ({excluded_meshes} mesh file(s) dropped)\n")
+        f.write("\n")
         f.write(f"NEW files ({len(new_only)}):\n")
         for rel, _full in new_only:
             f.write(f"  {rel}\n")
