@@ -45,8 +45,8 @@ if "%old_lib:~-1%"=="\" set "old_lib=%old_lib:~0,-1%"
 if not exist "%old_lib%\" goto :no_old_exist
 
 echo.
-echo %c_info%New library:%c_reset% %new_lib%
-echo %c_info%Old library:%c_reset% %old_lib%
+if not "%~1"=="" echo %c_info%New library:%c_reset% %new_lib%
+if not "%~2"=="" echo %c_info%Old library:%c_reset% %old_lib%
 echo.
 echo %c_head%Comparing...%c_reset%
 echo.

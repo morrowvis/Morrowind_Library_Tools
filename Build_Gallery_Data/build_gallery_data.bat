@@ -46,7 +46,7 @@ if not exist "%input_directory%\"  goto :no_input_exist
 if not exist "%output_directory%" mkdir "%output_directory%"
 set /a size_threshold=min_plugin_size_kb*1024
 
-echo %c_info%Input :%c_reset% %input_directory%
+if not "%~1"=="" echo %c_info%Input :%c_reset% %input_directory%
 echo.
 echo %c_head%Processing...%c_reset%
 echo.

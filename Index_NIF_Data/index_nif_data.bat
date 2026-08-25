@@ -50,7 +50,7 @@ if not defined source   goto :no_source_given
 if not exist "%source%\" goto :no_source_exist
 
 echo %c_info%Python:%c_reset% %blender_python%
-echo %c_info%Source:%c_reset% %source%
+if not "%~1"=="" echo %c_info%Source:%c_reset% %source%
 echo.
 echo %c_head%Indexing...%c_reset%
 echo.
