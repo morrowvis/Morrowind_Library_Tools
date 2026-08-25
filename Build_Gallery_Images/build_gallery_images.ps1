@@ -142,12 +142,13 @@ while ($running.Count -gt 0) {
             $iniIdx = $r.IniIdx
             $running.RemoveAt($idx)
             $done++
-            Write-Host ("  [{0}/{1}]" -f $done, $total) -ForegroundColor DarkGray
+            Write-Host -NoNewline ("`r  [{0}/{1}]" -f $done, $total) -ForegroundColor DarkGray
             if ($queue.Count -gt 0) { [void]$running.Add((Start-One $queue.Dequeue() $iniIdx)) }
         }
     }
     Start-Sleep -Milliseconds 50
 }
+Write-Host ""
 
 $pool.Close(); $pool.Dispose()
 Remove-Item -LiteralPath $iniRoot -Recurse -Force -ErrorAction SilentlyContinue
