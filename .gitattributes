@@ -1,0 +1,9 @@
+# LF in the repository and in every working tree.
+# eol=lf is explicit: without it, core.eol defaults to native, which is CRLF on Windows.
+# Batch files stay CRLF: cmd.exe can mis-execute LF-only .bat.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.nif binary
+*.dll binary
+*.7z binary
