@@ -109,9 +109,16 @@ for ($w = 0; $w -lt $workers; $w++) {
 $sb = {
     param($job, $irfanview, $iniFolder)
     if (-not (Test-Path -LiteralPath $job.DestDir)) { New-Item -ItemType Directory -Path $job.DestDir -Force | Out-Null }
-    $argStr = '"' + $job.Src + '\*.png" /resize=(' + $job.Size + ',' + $job.Size + ') /aspectratio /resample /ini="' + $iniFolder + '" /convert="' + $job.DestDir + '\*.webp"'
-    $proc = Start-Process -FilePath $irfanview -ArgumentList $argStr -Wait -PassThru -WindowStyle Hidden
-    return $proc.ExitCode
+    # /silent: report load/save errors through the exit code instead of a modal
+    # dialog, which -WindowStyle Hidden does not suppress and which would block
+    # the worker until someone clicks OK.
+    $argStr = '"' + $job.Src + '\*.png" /resize=(' + $job.Size + ',' + $job.Size + ') /aspectratio /resample /silent /ini="' + $iniFolder + '" /convert="' + $job.DestDir + '\*.webp"'
+    try {
+        $proc = Start-Process -FilePath $irfanview -ArgumentList $argStr -Wait -PassThru -WindowStyle Hidden
+        return $proc.ExitCode        # 0 = ok, 1/2 = load or save error
+    } catch {
+        return -1                    # could not launch IrfanView at all
+    }
 }
 
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -127,18 +134,26 @@ function Start-One($job, $iniIdx) {
     $ps = [powershell]::Create()
     $ps.RunspacePool = $pool
     [void]$ps.AddScript($sb).AddArgument($job).AddArgument($irfanview).AddArgument($iniFolders[$iniIdx])
-    return [pscustomobject]@{ PS = $ps; Handle = $ps.BeginInvoke(); IniIdx = $iniIdx }
+    return [pscustomobject]@{ PS = $ps; Handle = $ps.BeginInvoke(); IniIdx = $iniIdx; Job = $job }
 }
 
 for ($k = 0; $k -lt $workers -and $queue.Count -gt 0; $k++) { [void]$running.Add((Start-One $queue.Dequeue() $k)) }
 
 $done = 0
+$failedJobs = New-Object System.Collections.ArrayList
 while ($running.Count -gt 0) {
     for ($idx = $running.Count - 1; $idx -ge 0; $idx--) {
         $r = $running[$idx]
         if ($r.Handle.IsCompleted) {
-            [void]$r.PS.EndInvoke($r.Handle)
+            $code = -1
+            try {
+                $out = @($r.PS.EndInvoke($r.Handle))
+                if ($out.Count -gt 0) { $code = [int]$out[-1] }
+            } catch { $code = -1 }
             $r.PS.Dispose()
+            if ($code -ne 0) {
+                [void]$failedJobs.Add([pscustomobject]@{ Src = $r.Job.Src; Size = $r.Job.Size; ExitCode = $code })
+            }
             $iniIdx = $r.IniIdx
             $running.RemoveAt($idx)
             $done++
@@ -154,22 +169,65 @@ $pool.Close(); $pool.Dispose()
 Remove-Item -LiteralPath $iniRoot -Recurse -Force -ErrorAction SilentlyContinue
 $sw.Stop()
 
-# Verify output count.
-$expected = $pngTotal * $profiles.Count
-$made = 0
-foreach ($p in $profiles) {
-    $base = Join-Path $output_dir $p.name
-    if (Test-Path -LiteralPath $base) { $made += @(Get-ChildItem -LiteralPath $base -Filter *.webp -File -Recurse).Count }
+# Verify name by name, per folder. A plain recursive count would let leftovers
+# from an earlier run stand in for files this run failed to write.
+$missing = New-Object System.Collections.ArrayList
+foreach ($j in $jobs) {
+    $have = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    if (Test-Path -LiteralPath $j.DestDir) {
+        foreach ($w in Get-ChildItem -LiteralPath $j.DestDir -Filter *.webp -File) { [void]$have.Add($w.BaseName) }
+    }
+    foreach ($src in Get-ChildItem -LiteralPath $j.Src -Filter *.png -File) {
+        if (-not $have.Contains($src.BaseName)) {
+            $miss = Join-Path $j.DestDir ($src.BaseName + '.webp')
+            [void]$missing.Add($miss.Substring($output_dir.Length + 1))
+        }
+    }
 }
 
+$expected = $pngTotal * $profiles.Count
+$made     = $expected - $missing.Count
+
+# ---- log ----------------------------------------------------------------
+$logPath = Join-Path $output_dir 'build_gallery_images.log'
+$log = New-Object System.Collections.ArrayList
+[void]$log.Add(("Build Gallery Images - {0}" -f (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')))
+[void]$log.Add(("Input    : {0}" -f $input_dir))
+[void]$log.Add(("Output   : {0}" -f $output_dir))
+[void]$log.Add(("Settings : renders={0} thumbnails={1} quality={2} method={3} passes={4} lossless={5} workers={6}" -f $renders_size, $thumbnails_size, $quality, $method, $passes, $lossless, $workers))
+[void]$log.Add(("Result   : {0} folders, {1} PNGs, {2} jobs, {3}/{4} webp written in {5:n1}s" -f $pngFolders.Count, $pngTotal, $total, $made, $expected, $sw.Elapsed.TotalSeconds))
+[void]$log.Add('')
+
+if ($failedJobs.Count -gt 0) {
+    [void]$log.Add(("IrfanView reported an error in {0} job(s)  (exit 1/2 = load or save error, -1 = could not launch):" -f $failedJobs.Count))
+    foreach ($f in $failedJobs) {
+        $rel = if ($f.Src.Length -gt $input_dir.Length) { $f.Src.Substring($input_dir.Length + 1) } else { '.' }
+        [void]$log.Add(("  exit {0}  size {1}  {2}" -f $f.ExitCode, $f.Size, $rel))
+    }
+    [void]$log.Add('')
+}
+
+if ($missing.Count -gt 0) {
+    [void]$log.Add(("Missing {0} output file(s):" -f $missing.Count))
+    foreach ($m in $missing) { [void]$log.Add("  $m") }
+} else {
+    [void]$log.Add('No missing output files.')
+}
+
+if (-not (Test-Path -LiteralPath $output_dir)) { New-Item -ItemType Directory -Path $output_dir -Force | Out-Null }
+Set-Content -LiteralPath $logPath -Value $log -Encoding UTF8
+
 Write-Host ("Elapsed: {0:n1}s" -f $sw.Elapsed.TotalSeconds)
+Write-Host ("Log: {0}" -f $logPath) -ForegroundColor DarkGray
 
 try { [void][Win32.DPIUtils]::SetProcessDPIAware() } catch { }
 
-if ($made -lt $expected) {
+if ($missing.Count -gt 0 -or $failedJobs.Count -gt 0) {
     Write-Host ("WARNING: expected {0} webp files, found {1}." -f $expected, $made) -ForegroundColor Yellow
+    foreach ($m in @($missing | Select-Object -First 10)) { Write-Host ("  missing: {0}" -f $m) -ForegroundColor Yellow }
+    if ($missing.Count -gt 10) { Write-Host ("  ...and {0} more, see the log." -f ($missing.Count - 10)) -ForegroundColor Yellow }
     [void][System.Windows.Forms.MessageBox]::Show(
-        ("WEBP conversion finished with problems.`n`nExpected {0} files, found {1}." -f $expected, $made),
+        ("WEBP conversion finished with problems.`n`nExpected {0} files, found {1}.`n`nDetails: {2}" -f $expected, $made, $logPath),
         "Build Gallery Images",
         [System.Windows.Forms.MessageBoxButtons]::OK,
         [System.Windows.Forms.MessageBoxIcon]::Warning)
