@@ -219,7 +219,7 @@ def main():
             for line in sorted(flagged):
                 f.write(line + "\n")
 
-    with open(os.path.join(output_dir, "_report.txt"), "w", encoding="utf-8") as f:
+    with open(os.path.join(output_dir, "report.txt"), "w", encoding="utf-8") as f:
         f.write("Library comparison report\n")
         f.write(f"  generated : {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"  new library: {new_lib}\n")
