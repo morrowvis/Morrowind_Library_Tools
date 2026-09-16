@@ -120,6 +120,21 @@ def load_settings():
     return cfg["settings"]
 
 
+def extra_mods(settings, base):
+    """Mod folders to include even though they are not ticked in modlist.txt.
+
+    One per (indented) line and/or comma separated. A bare name resolves under
+    the instance's mods folder; an absolute path is used as-is.
+    """
+    out = []
+    for line in (settings.get("extra_mods", "") or "").replace(",", "\n").splitlines():
+        name = line.strip().strip('"')
+        if name:
+            out.append((name, name if os.path.isabs(name)
+                        else os.path.join(base, "mods", name)))
+    return out
+
+
 # ---- MO2 resolution (same model as Extract_Scripts) ---------------------
 
 def _ini_value(raw):
@@ -187,7 +202,7 @@ def read_lines(path):
     return out
 
 
-def collect_mo2_active(base, plugins_mode):
+def collect_mo2_active(base, plugins_mode, extra=()):
     profile, game_path = read_mo2_ini(base)
     game_data = os.path.join(game_path, "Data Files") if game_path else None
     prof_dir = os.path.join(base, "profiles", profile)
@@ -197,7 +212,16 @@ def collect_mo2_active(base, plugins_mode):
         if line.startswith("+") and not line.endswith("_separator"):
             enabled.append(line[1:])
 
+    # Named in config.ini deliberately, so it outranks the ticked mods; overwrite still wins.
+    extra_dirs = []
+    for name, path in extra:
+        if os.path.isdir(path):
+            extra_dirs.append(path)
+        else:
+            print(f"  extra_mods: not found, skipped -- {name} ({path})")
+
     search = [os.path.join(base, "overwrite")]
+    search += extra_dirs
     search += [os.path.join(base, "mods", m) for m in enabled]
     if game_data:
         search.append(game_data)
@@ -229,6 +253,19 @@ def collect_mo2_active(base, plugins_mode):
         print("ERROR: could not resolve the plugin list. Use plugins = all to fall back "
               "to loadorder.txt, or check the MO2 folder.")
         sys.exit(1)
+
+    # Appended last so their records win ties; one already listed keeps its place.
+    seen = {w.lower() for w in wanted}
+    added = []
+    for d in extra_dirs:
+        for fn in sorted(os.listdir(d)):
+            low = fn.lower()
+            if (low.endswith(".esp") or low.endswith(".esm")) and low not in seen:
+                wanted.append(fn)
+                seen.add(low)
+                added.append(fn)
+    if added:
+        print(f"  extra_mods: added {len(added)} plugin(s) -- {', '.join(added)}")
 
     jobs, missing = [], []
     for name in wanted:
@@ -717,7 +754,8 @@ def main():
     missing = []
     search_dirs = []
     if mo2:
-        profile, mod_count, jobs, missing, source, search_dirs = collect_mo2_active(root, plugins_mode)
+        profile, mod_count, jobs, missing, source, search_dirs = collect_mo2_active(
+            root, plugins_mode, extra_mods(settings, root))
         print(f"MO2 instance detected (profile '{profile}', {mod_count} enabled mods).")
         print(f"Resolved {len(jobs)} plugin(s) from {source}"
               + (f"; {len(missing)} not found on disk." if missing else "."))
